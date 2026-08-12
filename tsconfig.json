@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/config" },
+    { "path": "./packages/router-core" },
+    { "path": "./packages/providers" },
+    { "path": "./apps/api" }
+  ]
+}

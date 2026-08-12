@@ -1,0 +1,29 @@
+{
+  // Lint-only project for the test suite.
+  //
+  // The build tsconfigs each include just their own `src/**`, so the files
+  // under `tests/**` belong to no compiled project and typescript-eslint's
+  // project service cannot type them ("was not found by the project service").
+  // This config exists purely to give those files a home for typed linting.
+  //
+  // It is deliberately NOT referenced by the root `tsconfig.json`, so
+  // `tsc --build` never picks it up — `composite`/`declaration` are off and
+  // `noEmit` is on. The `@router/*` aliases mirror apps/api so cross-package
+  // imports resolve to source and the typed rules see real types.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "rootDir": "..",
+    "paths": {
+      "@router/shared": ["../packages/shared/src/index.ts"],
+      "@router/config": ["../packages/config/src/index.ts"],
+      "@router/router-core": ["../packages/router-core/src/index.ts"],
+      "@router/providers": ["../packages/providers/src/index.ts"],
+      "@router/api": ["../apps/api/src/index.ts"]
+    }
+  },
+  "include": ["**/*.ts"]
+}

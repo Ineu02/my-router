@@ -1,0 +1,40 @@
+{
+  "name": "llm-router",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted OpenAI-compatible LLM routing gateway with health-aware failover",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "npm run build --workspace=@router/shared --workspace=@router/config --workspace=@router/router-core --workspace=@router/providers --workspace=@router/api",
+    "dev": "npm run dev --workspace=@router/api",
+    "dev:web": "npm run dev --workspace=@router/web",
+    "dev:mock": "npm run mock --workspace=@router/api",
+    "start": "npm run start --workspace=@router/api",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --build --force",
+    "lint": "eslint . --max-warnings=0",
+    "seed": "npm run seed --workspace=@router/api",
+    "router": "tsx scripts/cli.ts",
+    "verify:live": "node scripts/verify-live.mjs",
+    "verify:sdk": "node scripts/verify-sdk.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^22.10.2",
+    "eslint": "^9.39.5",
+    "globals": "^15.15.0",
+    "openai": "^6.49.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^4.1.10"
+  }
+}

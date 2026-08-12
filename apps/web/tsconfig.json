@@ -1,0 +1,35 @@
+{
+  // Standalone lint/typecheck project for the browser dashboard.
+  //
+  // Deliberately NOT composite and NOT referenced by the root tsconfig, so
+  // `tsc --build --force` (the backend typecheck) never picks it up. Vite owns
+  // the actual build; this config exists for `tsc --noEmit` and typed linting.
+  //
+  // Types are reused from @router/shared via `import type` only — the alias
+  // resolves to source, and because the imports are type-only they are fully
+  // erased at build time, so no backend code (or zod) reaches the browser.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "paths": {
+      "@router/shared": ["../../packages/shared/src/index.ts"]
+    }
+  },
+  "include": ["src"]
+}
