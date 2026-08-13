@@ -168,6 +168,34 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 2,
+    name: 'oauth_credentials',
+    up: (db) => {
+      // Distinguish env-backed credentials (the secret is an env var name) from
+      // OAuth ones (tokens live encrypted in the new table below). Existing rows
+      // default to 'env', so nothing about the current providers changes.
+      db.exec(`ALTER TABLE credentials ADD COLUMN secret_kind TEXT NOT NULL DEFAULT 'env';`);
+
+      // Encrypted-at-rest OAuth token storage, one row per connected account.
+      // enc_* columns hold AES-256-GCM blobs (see crypto.ts) — raw tokens never
+      // touch this table. Deleting the credential cascades the tokens away.
+      db.exec(`
+        CREATE TABLE oauth_credentials (
+          credential_id TEXT PRIMARY KEY REFERENCES credentials(id) ON DELETE CASCADE,
+          account_id    TEXT,
+          email         TEXT,
+          enc_access    TEXT NOT NULL,
+          enc_refresh   TEXT NOT NULL,
+          enc_id        TEXT,
+          expires_at    INTEGER NOT NULL,
+          scope         TEXT,
+          updated_at    INTEGER NOT NULL
+        );
+        CREATE INDEX idx_oauth_account ON oauth_credentials(account_id);
+      `);
+    },
+  },
 ];
 
 function migrate(db: DB): void {

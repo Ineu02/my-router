@@ -9,12 +9,16 @@ import {
   type ProviderAttempt,
   type RouterEvent,
   type RouterMetadata,
+  type CredentialEntry,
 } from '@router/shared';
 import {
   AllProvidersFailedError,
   DEFAULT_HEALTH_CONFIG,
   HealthTracker,
   RoundRobinCursor,
+  TokenManager,
+  OAuthError,
+  resolveEndpoints,
   detectRequiredCapabilities,
   executeWithFallback,
   resolveCandidates,
@@ -24,6 +28,7 @@ import {
 } from '@router/router-core';
 import { ProviderRegistry, stripRouterFields, type ProviderStreamResult } from '@router/providers';
 import { resolveSecret, type Repositories, type RouterConfig } from '@router/config';
+import { EncryptingOAuthStore } from './oauth-store.js';
 
 /**
  * The routing engine.
@@ -64,6 +69,15 @@ export class RouterEngine {
   private probeTimer: NodeJS.Timeout | null = null;
   private persistTimer: NodeJS.Timeout | null = null;
 
+  /**
+   * Present only when OAuth is configured. Owns access-token refresh +
+   * refresh-token rotation for `secret_kind='oauth'` credentials, with
+   * single-flight coalescing so concurrent requests can't race a refresh.
+   * Env-key credentials never touch it — they resolve synchronously through
+   * `resolveSecret`.
+   */
+  private readonly tokenManager: TokenManager | null;
+
   constructor(
     private repos: Repositories,
     private config: RouterConfig,
@@ -98,6 +112,33 @@ export class RouterEngine {
         at: this.now(),
       });
     });
+
+    // OAuth token machinery is optional: only wired when Codex OAuth is
+    // configured. The encrypting store keeps the passphrase in this layer —
+    // the TokenManager sees plaintext, the DB sees only ciphertext.
+    if (this.config.codexOAuth) {
+      const oauth = this.config.codexOAuth;
+      this.tokenManager = new TokenManager({
+        store: new EncryptingOAuthStore(this.repos, this.config.credentialEncKey),
+        endpoints: resolveEndpoints({
+          issuer: oauth.issuer,
+          clientId: oauth.clientId,
+          redirectUri: oauth.redirectUri,
+        }),
+        skewMs: oauth.refreshSkewMs,
+        now: this.now,
+        // A refresh that fails with invalid_grant means the account has been
+        // revoked upstream. Park the credential through the same AUTH policy
+        // that env-key auth failures use, so it drops out of rotation and only
+        // returns through a fresh reconnect.
+        onRefreshFailure: (credId) => {
+          const cred = this.repos.credentials.get(credId);
+          if (cred) this.health.recordFailure(credId, cred.providerId, 'AUTH', this.now());
+        },
+      });
+    } else {
+      this.tokenManager = null;
+    }
   }
 
   /* ── lifecycle ─────────────────────────────────────────────────────── */
@@ -239,7 +280,7 @@ export class RouterEngine {
         this.emit({ type: 'request.fallback', requestId: input.requestId, from, to, reason }),
       onDisableModel: (id, reason) => this.disableModel(id, reason),
       execute: async (ctx) => {
-        const call = this.callOptions(ctx.candidate, ctx.credential.keyRef, ctx.timeoutMs);
+        const call = await this.callOptions(ctx.candidate, ctx.credential, ctx.timeoutMs);
         const adapter = this.adapterFor(ctx.candidate);
         return withTimeout(
           ctx.timeoutMs,
@@ -286,7 +327,7 @@ export class RouterEngine {
         this.emit({ type: 'request.fallback', requestId: input.requestId, from, to, reason }),
       onDisableModel: (id, reason) => this.disableModel(id, reason),
       execute: async (ctx) => {
-        const call = this.callOptions(ctx.candidate, ctx.credential.keyRef, ctx.timeoutMs);
+        const call = await this.callOptions(ctx.candidate, ctx.credential, ctx.timeoutMs);
         const adapter = this.adapterFor(ctx.candidate);
         // Only the time-to-first-token is bounded by the attempt timeout; the
         // body may legitimately take much longer than that to finish.
@@ -353,8 +394,8 @@ export class RouterEngine {
         const model = this.repos.models
           .list()
           .find((m) => m.provider === provider.id && m.enabled);
-        const secret = resolveSecret(cred.keyRef, this.config);
-        if (!secret) {
+        const resolved = await this.probeSecret(cred, provider.id);
+        if (!resolved) {
           this.health.setEnabled(cred.id, cred.providerId, false, this.now());
           return;
         }
@@ -368,12 +409,12 @@ export class RouterEngine {
 
         try {
           const res = await adapter.healthCheck({
-            apiKey: secret,
+            apiKey: resolved.apiKey,
             baseUrl: provider.baseUrl,
             signal: AbortSignal.timeout(this.config.connectTimeoutMs),
             timeoutMs: this.config.connectTimeoutMs,
             model: model?.model,
-            headers: this.repos.providers.extraHeaders(provider.id),
+            headers: resolved.headers,
           });
           this.health.recordProbe(cred.id, provider.id, res.ok, res.latencyMs, this.now());
         } catch {
@@ -393,9 +434,13 @@ export class RouterEngine {
     const provider = this.repos.providers.get(cred.providerId);
     if (!provider) return { ok: false, latencyMs: 0, detail: 'Unknown provider' };
 
-    const secret = resolveSecret(cred.keyRef, this.config);
-    if (!secret) {
-      return { ok: false, latencyMs: 0, detail: `Environment variable ${cred.keyRef} is not set` };
+    const resolved = await this.probeSecret(cred, provider.id);
+    if (!resolved) {
+      const detail =
+        cred.secretKind === 'oauth'
+          ? 'No valid OAuth token — reconnect the account'
+          : `Environment variable ${cred.keyRef} is not set`;
+      return { ok: false, latencyMs: 0, detail };
     }
 
     const model = this.repos.models.list().find((m) => m.provider === provider.id && m.enabled);
@@ -408,11 +453,12 @@ export class RouterEngine {
 
     try {
       const res = await adapter.healthCheck({
-        apiKey: secret,
+        apiKey: resolved.apiKey,
         baseUrl: provider.baseUrl,
         signal: AbortSignal.timeout(this.config.connectTimeoutMs),
         timeoutMs: this.config.connectTimeoutMs,
         model: model?.model,
+        headers: resolved.headers,
       });
       this.health.recordProbe(cred.id, provider.id, res.ok, res.latencyMs, this.now());
       this.persistHealth();
@@ -435,12 +481,73 @@ export class RouterEngine {
   }
 
   /**
-   * Resolve a credential reference to a live secret. This is the only place in
-   * the request path that touches key material, and it reads the in-memory
-   * config map — never the database.
+   * Resolve a live bearer + headers for a health probe against one credential,
+   * or null if none can be produced (env var unset, or OAuth refresh failed).
+   * Mirrors the two credential kinds handled in `callOptions`, but never throws
+   * — a probe just wants a token or an "unusable" answer.
    */
-  private callOptions(candidate: Candidate, keyRef: string, timeoutMs: number) {
-    const apiKey = resolveSecret(keyRef, this.config);
+  private async probeSecret(
+    cred: CredentialEntry,
+    providerId: string,
+  ): Promise<{ apiKey: string; headers: Record<string, string> } | null> {
+    const headers: Record<string, string> = { ...this.repos.providers.extraHeaders(providerId) };
+    if (cred.secretKind === 'oauth') {
+      if (!this.tokenManager) return null;
+      try {
+        const { accessToken, accountId } = await this.tokenManager.getAccessToken(cred.id);
+        if (accountId) headers['chatgpt-account-id'] = accountId;
+        return { apiKey: accessToken, headers };
+      } catch {
+        return null;
+      }
+    }
+    const secret = resolveSecret(cred.keyRef, this.config);
+    return secret ? { apiKey: secret, headers } : null;
+  }
+
+  /**
+   * Resolve a credential reference to a live set of call options.
+   *
+   * Two credential kinds meet here. Env-key credentials resolve synchronously
+   * through `resolveSecret`, reading the in-memory config map — never the
+   * database. OAuth credentials go through the {@link TokenManager}, which
+   * hands back a fresh bearer (refreshing + rotating if needed) plus the
+   * account id the codex adapter promotes to the `chatgpt-account-id` header.
+   * This is the only place in the request path that touches key material.
+   */
+  private async callOptions(candidate: Candidate, credential: CredentialEntry, timeoutMs: number) {
+    const baseHeaders = this.repos.providers.extraHeaders(candidate.provider.id);
+
+    if (credential.secretKind === 'oauth') {
+      if (!this.tokenManager) {
+        throw new RouterError('AUTH', `OAuth is not configured for ${candidate.provider.id}`, {
+          provider: candidate.provider.id,
+        });
+      }
+      try {
+        const { accessToken, accountId } = await this.tokenManager.getAccessToken(credential.id);
+        const headers = { ...baseHeaders };
+        if (accountId) headers['chatgpt-account-id'] = accountId;
+        return {
+          model: candidate.model.model,
+          apiKey: accessToken,
+          baseUrl: candidate.provider.baseUrl,
+          timeoutMs,
+          headers,
+        };
+      } catch (err) {
+        // A refresh failure is an auth failure from the ladder's point of view:
+        // fail over to the next credential rather than crashing the request.
+        if (err instanceof OAuthError) {
+          throw new RouterError('AUTH', `OAuth token unavailable for ${candidate.provider.id}: ${err.kind}`, {
+            provider: candidate.provider.id,
+          });
+        }
+        throw err;
+      }
+    }
+
+    const apiKey = resolveSecret(credential.keyRef, this.config);
     if (!apiKey) {
       throw new RouterError('AUTH', `No credential available for ${candidate.provider.id}`, {
         provider: candidate.provider.id,
@@ -451,7 +558,7 @@ export class RouterEngine {
       apiKey,
       baseUrl: candidate.provider.baseUrl,
       timeoutMs,
-      headers: this.repos.providers.extraHeaders(candidate.provider.id),
+      headers: baseHeaders,
     };
   }
 

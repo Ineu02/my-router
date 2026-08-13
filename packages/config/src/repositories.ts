@@ -143,6 +143,7 @@ export class CredentialRepo {
     enabled?: boolean;
     priority?: number;
     weight?: number;
+    secretKind?: 'env' | 'oauth';
   }): CredentialEntry {
     const existing = this.db
       .prepare('SELECT id FROM credentials WHERE provider_id = ? AND key_ref = ?')
@@ -153,14 +154,15 @@ export class CredentialRepo {
 
     this.db
       .prepare(
-        `INSERT INTO credentials (id, provider_id, label, key_ref, masked_key, enabled, priority, weight, created_at)
-         VALUES (@id, @providerId, @label, @keyRef, @masked, @enabled, @priority, @weight, @now)
+        `INSERT INTO credentials (id, provider_id, label, key_ref, masked_key, enabled, priority, weight, created_at, secret_kind)
+         VALUES (@id, @providerId, @label, @keyRef, @masked, @enabled, @priority, @weight, @now, @secretKind)
          ON CONFLICT(id) DO UPDATE SET
-           label      = @label,
-           key_ref    = @keyRef,
-           masked_key = @masked,
-           priority   = @priority,
-           weight     = @weight`,
+           label       = @label,
+           key_ref     = @keyRef,
+           masked_key  = @masked,
+           priority    = @priority,
+           weight      = @weight,
+           secret_kind = @secretKind`,
       )
       .run({
         id,
@@ -172,6 +174,7 @@ export class CredentialRepo {
         priority: c.priority ?? 50,
         weight: c.weight ?? 1,
         now,
+        secretKind: c.secretKind ?? 'env',
       });
 
     return this.get(id)!;
@@ -729,6 +732,72 @@ export class SettingsRepo {
   }
 }
 
+/* ── oauth tokens ────────────────────────────────────────────────────── */
+
+/**
+ * One row per connected OAuth account. The `enc*` fields hold AES-256-GCM
+ * blobs (see crypto.ts); this repo is deliberately "dumb" — it stores and
+ * returns already-encrypted strings and never touches a key. Encryption and
+ * decryption live in the store adapter that wraps this repo, so the crypto
+ * passphrase never has to reach the data layer.
+ */
+export interface OAuthTokenRow {
+  credentialId: string;
+  accountId: string | null;
+  email: string | null;
+  encAccess: string;
+  encRefresh: string;
+  encId: string | null;
+  expiresAt: number;
+  scope: string | null;
+  updatedAt: number;
+}
+
+export class OAuthTokenRepo {
+  constructor(private db: DB) {}
+
+  get(credentialId: string): OAuthTokenRow | null {
+    const row = this.db
+      .prepare('SELECT * FROM oauth_credentials WHERE credential_id = ?')
+      .get(credentialId);
+    return row ? rowToOAuth(row) : null;
+  }
+
+  getByAccountId(accountId: string): OAuthTokenRow | null {
+    const row = this.db
+      .prepare('SELECT * FROM oauth_credentials WHERE account_id = ?')
+      .get(accountId);
+    return row ? rowToOAuth(row) : null;
+  }
+
+  list(): OAuthTokenRow[] {
+    return this.db.prepare('SELECT * FROM oauth_credentials').all().map(rowToOAuth);
+  }
+
+  upsert(t: OAuthTokenRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO oauth_credentials
+           (credential_id, account_id, email, enc_access, enc_refresh, enc_id, expires_at, scope, updated_at)
+         VALUES (@credentialId, @accountId, @email, @encAccess, @encRefresh, @encId, @expiresAt, @scope, @updatedAt)
+         ON CONFLICT(credential_id) DO UPDATE SET
+           account_id  = @accountId,
+           email       = @email,
+           enc_access  = @encAccess,
+           enc_refresh = @encRefresh,
+           enc_id      = @encId,
+           expires_at  = @expiresAt,
+           scope       = @scope,
+           updated_at  = @updatedAt`,
+      )
+      .run({ ...t, updatedAt: Date.now() });
+  }
+
+  delete(credentialId: string): void {
+    this.db.prepare('DELETE FROM oauth_credentials WHERE credential_id = ?').run(credentialId);
+  }
+}
+
 /* ── row mappers ─────────────────────────────────────────────────────── */
 
 function rowToProvider(r: unknown): ProviderEntry {
@@ -758,6 +827,22 @@ function rowToCredential(r: unknown): CredentialEntry {
     priority: row.priority as number,
     weight: row.weight as number,
     createdAt: row.created_at as number,
+    secretKind: ((row.secret_kind as string) ?? 'env') as CredentialEntry['secretKind'],
+  };
+}
+
+function rowToOAuth(r: unknown): OAuthTokenRow {
+  const row = r as Record<string, unknown>;
+  return {
+    credentialId: row.credential_id as string,
+    accountId: (row.account_id as string) ?? null,
+    email: (row.email as string) ?? null,
+    encAccess: row.enc_access as string,
+    encRefresh: row.enc_refresh as string,
+    encId: (row.enc_id as string) ?? null,
+    expiresAt: row.expires_at as number,
+    scope: (row.scope as string) ?? null,
+    updatedAt: row.updated_at as number,
   };
 }
 
@@ -883,6 +968,7 @@ export interface Repositories {
   logs: RequestLogRepo;
   health: HealthRepo;
   settings: SettingsRepo;
+  oauth: OAuthTokenRepo;
 }
 
 export function createRepositories(db: DB): Repositories {
@@ -895,5 +981,6 @@ export function createRepositories(db: DB): Repositories {
     logs: new RequestLogRepo(db),
     health: new HealthRepo(db),
     settings: new SettingsRepo(db),
+    oauth: new OAuthTokenRepo(db),
   };
 }

@@ -38,6 +38,8 @@ export interface MockState {
   requestCount: number;
   byModel: Record<string, number>;
   lastAuthorization: string | null;
+  /** Last `chatgpt-account-id` header seen — the OAuth adapter's signature. */
+  lastAccountId: string | null;
 }
 
 function freshState(): MockState {
@@ -48,6 +50,7 @@ function freshState(): MockState {
     requestCount: 0,
     byModel: {},
     lastAuthorization: null,
+    lastAccountId: null,
   };
 }
 
@@ -143,10 +146,12 @@ async function handleRequest(
   /* ── auth ──────────────────────────────────────────────────────────── */
   const auth = req.headers.authorization ?? null;
   state.lastAuthorization = auth;
+  const accountId = req.headers['chatgpt-account-id'];
+  if (typeof accountId === 'string') state.lastAccountId = accountId;
   const key = auth?.replace(/^Bearer\s+/i, '') ?? '';
 
   if (path === '/v1/models' && req.method === 'GET') {
-    if (key !== MOCK_API_KEY) return json(res, 401, oaiError('Invalid API key', 'invalid_api_key'));
+    if (!accepted(key)) return json(res, 401, oaiError('Invalid API key', 'invalid_api_key'));
     return json(res, 200, {
       object: 'list',
       data: MODELS.map((id) => ({ id, object: 'model', created: 0, owned_by: 'mock' })),
@@ -157,7 +162,7 @@ async function handleRequest(
     return json(res, 404, oaiError(`Unknown route ${req.method} ${path}`, 'not_found'));
   }
 
-  if (key !== MOCK_API_KEY) {
+  if (!accepted(key)) {
     return json(res, 401, oaiError('Incorrect API key provided', 'invalid_api_key'));
   }
 
@@ -306,6 +311,17 @@ async function streamReply(
 
 function oaiError(message: string, code: string) {
   return { error: { message, type: code, code } };
+}
+
+/**
+ * A bearer this mock accepts. Either the static `MOCK_API_KEY` (env-key
+ * providers) or an OAuth access token — the mock OAuth server mints those with
+ * an `at_` prefix, so the whole Codex path can be verified end to end without
+ * the mock upstream having to speak the real ChatGPT backend. This never
+ * loosens the env-key tests: they all present `MOCK_API_KEY`.
+ */
+function accepted(key: string): boolean {
+  return key === MOCK_API_KEY || /^at_[A-Za-z0-9_-]+$/.test(key);
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {

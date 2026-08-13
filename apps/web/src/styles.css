@@ -356,6 +356,12 @@ table.reg tr:hover td { background: rgba(212, 175, 55, 0.04); }
 .badge-on { color: var(--h-online); }
 .badge-off { color: var(--ink-faint); }
 
+/* Connections tab */
+.conn { display: flex; flex-direction: column; gap: 14px; padding: 6px 4px; }
+.conn__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.conn__actions { display: flex; gap: 8px; flex-shrink: 0; }
+.conn__note { font-size: 11px; color: var(--gold); border: 1px solid var(--hair-soft); border-radius: var(--r-sm, 6px); padding: 8px 10px; background: rgba(212, 175, 55, 0.05); }
+
 /* ══════════════════════════════════════════════════════════════════════
    Login gate
    ══════════════════════════════════════════════════════════════════════ */

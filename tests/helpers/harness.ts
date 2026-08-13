@@ -70,6 +70,9 @@ export function testConfig(overrides: Partial<RouterConfig> = {}): RouterConfig 
 
     customProvider: null,
 
+    codexOAuth: null,
+    credentialEncKey: 'test-credential-enc-key-0123456789abcdef',
+
     // Several env names, all resolving to the mock's single key. Credentials
     // dedupe on (provider, keyRef) — correctly, since the same env var on the
     // same provider *is* the same credential — so a test that wants two

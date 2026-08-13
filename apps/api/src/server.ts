@@ -23,6 +23,7 @@ import {
 import { RouterEngine } from './engine.js';
 import { registerPublicRoutes } from './routes.js';
 import { registerAdminRoutes } from './admin.js';
+import { registerOAuthRoutes } from './oauth.js';
 import {
   MemoryRateLimitStore,
   authenticateRequest,
@@ -241,6 +242,7 @@ export async function buildServer(opts: BuildOptions = {}): Promise<BuiltServer>
   const deps = { engine, repos, config, startedAt };
   registerPublicRoutes(app, deps);
   registerAdminRoutes(app, deps);
+  registerOAuthRoutes(app, deps);
 
   /* ── log retention ─────────────────────────────────────────────────── */
   const retention = setInterval(

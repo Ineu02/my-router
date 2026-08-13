@@ -1,6 +1,7 @@
 import type { ProviderKind } from '@router/shared';
 import type { Provider } from './types.js';
 import { OpenAICompatibleProvider } from './openai-compatible.js';
+import { OpenAICodexProvider } from './openai-codex.js';
 import { AnthropicProvider } from './anthropic.js';
 import { GeminiProvider } from './gemini.js';
 
@@ -220,6 +221,10 @@ export function createProvider(def: {
       return new AnthropicProvider(def.id, def.models ?? []);
     case 'gemini':
       return new GeminiProvider(def.id, def.models ?? []);
+    case 'openai-codex':
+      return new OpenAICodexProvider(def.id, def.models ?? [], {
+        extraHeaders: def.extraHeaders,
+      });
     case 'openai-compatible':
     default:
       return new OpenAICompatibleProvider(def.id, def.models ?? [], {

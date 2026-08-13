@@ -136,9 +136,24 @@ export const ProviderKind = {
   OPENAI_COMPATIBLE: 'openai-compatible',
   ANTHROPIC: 'anthropic',
   GEMINI: 'gemini',
+  /** OpenAI chat/completions wire format + OAuth (ChatGPT/Codex) credentials. */
+  OPENAI_CODEX: 'openai-codex',
 } as const;
 
 export type ProviderKind = (typeof ProviderKind)[keyof typeof ProviderKind];
+
+/**
+ * How a credential's secret is stored/resolved.
+ * - `env`   — `keyRef` is an env var name; secret resolved synchronously.
+ * - `oauth` — tokens live encrypted in `oauth_credentials`, keyed by this
+ *             credential's id, and are resolved/refreshed at call time.
+ */
+export const SecretKind = {
+  ENV: 'env',
+  OAUTH: 'oauth',
+} as const;
+
+export type SecretKind = (typeof SecretKind)[keyof typeof SecretKind];
 
 export interface ProviderEntry {
   id: string;
@@ -170,6 +185,8 @@ export interface CredentialEntry {
   priority: number;
   weight: number;
   createdAt: number;
+  /** How the secret is stored. Defaults to `env` for all legacy rows. */
+  secretKind: SecretKind;
 }
 
 /* ═══════════════════════════════════════════════════════════════════

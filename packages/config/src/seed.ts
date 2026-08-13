@@ -159,6 +159,40 @@ export async function seedDatabase(
     }
   }
 
+  /* ── Codex / ChatGPT OAuth provider ───────────────────────────────── */
+  // Registered when OAuth is enabled, with NO env credential — accounts are
+  // added at runtime through the browser OAuth flow, each becoming its own
+  // credential row (see the oauth routes). The model is seeded disabled-free
+  // but only routes once at least one account is connected and healthy.
+  if (config.codexOAuth) {
+    const existing = repos.providers.get(CODEX_PROVIDER_ID);
+    repos.providers.upsert({
+      id: CODEX_PROVIDER_ID,
+      displayName: 'ChatGPT / Codex (OAuth)',
+      kind: 'openai-codex',
+      baseUrl: config.codexOAuth.backendBaseUrl,
+      enabled: existing?.enabled ?? true,
+      priority: existing?.priority ?? 75,
+    });
+    if (!existing) result.providersSeeded++;
+
+    for (const m of CODEX_MODELS) {
+      const had = repos.models.get(m.id);
+      repos.models.upsert({
+        id: m.id,
+        provider: CODEX_PROVIDER_ID,
+        model: m.model,
+        displayName: m.displayName,
+        capabilities: [...m.capabilities],
+        contextLength: m.contextLength,
+        enabled: had?.enabled ?? true,
+        priority: had?.priority ?? m.priority,
+        costTier: 'standard',
+      });
+      if (!had) result.modelsSeeded++;
+    }
+  }
+
   /* ── Profiles ─────────────────────────────────────────────────────── */
   // Seeded once. After that they belong to the operator — re-running seed
   // must not silently undo a reordered ladder.
@@ -236,9 +270,13 @@ export async function seedDatabase(
   }
 
   // A credential whose env var vanished is disabled rather than deleted, so
-  // its accumulated health history survives a temporary unset.
+  // its accumulated health history survives a temporary unset. OAuth
+  // credentials are exempt: they have no env var to vanish — their secret is
+  // the encrypted token store, managed at runtime by the OAuth routes — so the
+  // env-reconciliation sweep must never touch them.
   for (const cred of repos.credentials.list()) {
     if (seen.has(cred.id)) continue;
+    if (cred.secretKind === 'oauth') continue;
     if (cred.enabled) {
       repos.credentials.setEnabled(cred.id, false);
       result.credentialsDisabled++;
@@ -285,6 +323,25 @@ export function resolveSecret(keyRef: string, config: RouterConfig): string | nu
 }
 
 /* ── helpers ─────────────────────────────────────────────────────────── */
+
+/** Provider id for the OAuth ChatGPT/Codex connection. */
+export const CODEX_PROVIDER_ID = 'openai-codex';
+
+/**
+ * Models routed to a connected ChatGPT/Codex account. Kept minimal — the
+ * account, not the model list, is what a user connects. Overridable later via
+ * the admin API like any other model row.
+ */
+export const CODEX_MODELS = [
+  {
+    id: 'codex-gpt-5',
+    model: 'gpt-5-codex',
+    displayName: 'ChatGPT Codex',
+    capabilities: ['chat', 'tools', 'reasoning'],
+    contextLength: 128_000,
+    priority: 75,
+  },
+] as const;
 
 /** The mock upstream accepts exactly this key — it is not a secret. */
 export const MOCK_API_KEY = 'mock-local-key';

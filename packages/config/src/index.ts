@@ -1,4 +1,5 @@
 export { openDatabase, currentSchemaVersion, type DB } from './db.js';
+export { encryptSecret, decryptSecret, isEncryptedBlob, safeEqual } from './crypto.js';
 export {
   loadConfig,
   toPublicConfig,
@@ -15,9 +16,11 @@ export {
   RequestLogRepo,
   HealthRepo,
   SettingsRepo,
+  OAuthTokenRepo,
   createRepositories,
   type Repositories,
   type LogFilter,
+  type OAuthTokenRow,
 } from './repositories.js';
 export {
   seedDatabase,
@@ -26,5 +29,7 @@ export {
   MOCK_MODELS,
   MOCK_BACKUP_MODELS,
   MOCK_INSTANCES,
+  CODEX_PROVIDER_ID,
+  CODEX_MODELS,
   type SeedResult,
 } from './seed.js';

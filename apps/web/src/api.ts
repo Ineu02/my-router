@@ -109,6 +109,24 @@ export interface HealthResponse {
 /** A router client key without its hash — safe to list. */
 export type PublicRouterKey = Omit<RouterApiKey, 'keyHash'>;
 
+/**
+ * A connected ChatGPT/Codex OAuth account, as the server projects it — masked
+ * and status-only. There is deliberately no token field anywhere in this shape:
+ * the access/refresh/id tokens never leave the server.
+ */
+export interface CodexAccount {
+  credentialId: string;
+  accountId: string | null;
+  email: string | null;
+  label: string;
+  maskedKey: string;
+  enabled: boolean;
+  scope: string | null;
+  expiresAt: number | null;
+  expired: boolean;
+  health: HealthSnapshot | null;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
@@ -172,6 +190,14 @@ export const api = {
     post('/api/admin/health/probe'),
   resetHealth: (): Promise<{ ok: true; states: HealthSnapshot[] }> =>
     post('/api/admin/health/reset'),
+
+  /* codex / chatgpt oauth accounts — masked + status only */
+  codexAccounts: (): Promise<{ accounts: CodexAccount[] }> =>
+    get('/api/admin/providers/codex/accounts'),
+  codexConnect: (): Promise<{ ok: true; authorizeUrl: string; state: string }> =>
+    post('/api/admin/providers/codex/connect'),
+  codexDisconnect: (credentialId: string): Promise<{ ok: true }> =>
+    post(`/api/admin/providers/codex/accounts/${encodeURIComponent(credentialId)}/disconnect`),
 };
 
 export type { DashboardStats, HealthStatus, ProviderStatusView, TopologyView };

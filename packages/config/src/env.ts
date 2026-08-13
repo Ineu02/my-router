@@ -75,6 +75,19 @@ const EnvSchema = z.object({
   CUSTOM_PROVIDER_BASE_URL: z.string().optional().default(''),
   CUSTOM_PROVIDER_API_KEY: z.string().optional().default(''),
   CUSTOM_PROVIDER_MODELS: z.string().optional().default(''),
+
+  /* ── Codex / ChatGPT OAuth (optional, all local-overridable) ───────── */
+  CODEX_OAUTH_ENABLED: bool(false),
+  CODEX_OAUTH_ISSUER: z.string().optional().default('https://auth.openai.com'),
+  CODEX_OAUTH_CLIENT_ID: z.string().optional().default('app_EMoamEEZ73f0CkXaXp7hrann'),
+  CODEX_OAUTH_REDIRECT_PORT: int(1455, 1),
+  // Where the codex adapter sends chat/completions. The real ChatGPT backend
+  // speaks a Responses API (documented follow-up); for local verification this
+  // points at the mock upstream. Defaults to OpenAI's public base as a marker.
+  CODEX_BACKEND_BASE_URL: z.string().optional().default('https://api.openai.com/v1'),
+  CODEX_OAUTH_REFRESH_SKEW_MS: int(60_000, 0),
+  // Passphrase used to encrypt OAuth tokens at rest. Falls back to SESSION_SECRET.
+  CREDENTIAL_ENC_KEY: z.string().optional().default(''),
 });
 
 export interface RouterConfig {
@@ -121,6 +134,27 @@ export interface RouterConfig {
   mockProviderPort: number;
 
   customProvider: { baseUrl: string; apiKey: string; models: string[] } | null;
+
+  /**
+   * Codex/ChatGPT OAuth. `null` when disabled. Endpoints are overridable so a
+   * local mock authorization server can stand in with no real login.
+   */
+  codexOAuth: {
+    enabled: boolean;
+    issuer: string;
+    clientId: string;
+    redirectPort: number;
+    redirectUri: string;
+    backendBaseUrl: string;
+    refreshSkewMs: number;
+  } | null;
+
+  /**
+   * Passphrase for encrypting OAuth tokens at rest. Never serialised. Falls
+   * back to SESSION_SECRET so a working install exists out of the box, though a
+   * dedicated key is recommended (rotating SESSION_SECRET would orphan tokens).
+   */
+  credentialEncKey: string;
 
   /**
    * Provider credentials keyed by env var name.
@@ -229,6 +263,13 @@ export function loadConfig(opts: { reload?: boolean; envPath?: string } = {}): {
       message: 'ENABLE_MOCK_PROVIDER=true in production — the fake upstream is registered as a provider.',
     });
   }
+  if (e.CODEX_OAUTH_ENABLED && !e.CREDENTIAL_ENC_KEY) {
+    warnings.push({
+      level: isProd ? 'error' : 'warn',
+      message:
+        'CODEX_OAUTH_ENABLED=true without CREDENTIAL_ENC_KEY — OAuth tokens will be encrypted with SESSION_SECRET/ADMIN_TOKEN; set a dedicated CREDENTIAL_ENC_KEY so rotating the session secret does not orphan stored tokens.',
+    });
+  }
 
   const databasePath = e.DATABASE_URL.startsWith('file:')
     ? resolve(root, e.DATABASE_URL.slice(5))
@@ -292,6 +333,20 @@ export function loadConfig(opts: { reload?: boolean; envPath?: string } = {}): {
           }
         : null,
 
+    codexOAuth: e.CODEX_OAUTH_ENABLED
+      ? {
+          enabled: true,
+          issuer: e.CODEX_OAUTH_ISSUER,
+          clientId: e.CODEX_OAUTH_CLIENT_ID,
+          redirectPort: e.CODEX_OAUTH_REDIRECT_PORT,
+          redirectUri: `http://localhost:${e.CODEX_OAUTH_REDIRECT_PORT}/auth/callback`,
+          backendBaseUrl: e.CODEX_BACKEND_BASE_URL,
+          refreshSkewMs: e.CODEX_OAUTH_REFRESH_SKEW_MS,
+        }
+      : null,
+
+    credentialEncKey: e.CREDENTIAL_ENC_KEY || e.SESSION_SECRET || e.ADMIN_TOKEN,
+
     providerKeys,
     providerBaseUrls,
   };
@@ -334,6 +389,7 @@ export function toPublicConfig(c: RouterConfig) {
       retentionDays: c.logRetentionDays,
     },
     mockProviderEnabled: c.enableMockProvider,
+    codexOAuthEnabled: c.codexOAuth !== null,
   };
 }
 

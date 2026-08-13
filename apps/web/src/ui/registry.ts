@@ -1,7 +1,8 @@
-import type { ModelRow, ProfileRow, PublicRouterKey } from '../api';
+import type { CodexAccount, ModelRow, ProfileRow, PublicRouterKey } from '../api';
+import { api, ApiError } from '../api';
 import { clear, fmtAgo, fmtNum, h } from './dom';
 
-type Tab = 'models' | 'profiles' | 'keys';
+type Tab = 'models' | 'profiles' | 'keys' | 'connections';
 
 interface RegistryData {
   models: ModelRow[];
@@ -45,6 +46,7 @@ export function createRegistry(): {
     { id: 'models', label: 'Models' },
     { id: 'profiles', label: 'Profiles' },
     { id: 'keys', label: 'Client Keys' },
+    { id: 'connections', label: 'Connections' },
   ];
 
   for (const t of TABS) {
@@ -80,7 +82,8 @@ export function createRegistry(): {
     clear(bodyEl);
     if (tab === 'models') bodyEl.append(renderModels(latest.models));
     else if (tab === 'profiles') bodyEl.append(renderProfiles(latest.profiles, latest.defaultProfile));
-    else bodyEl.append(renderKeys(latest.keys));
+    else if (tab === 'keys') bodyEl.append(renderKeys(latest.keys));
+    else bodyEl.append(renderConnections());
   };
 
   const renderModels = (models: ModelRow[]): HTMLElement => {
@@ -136,6 +139,144 @@ export function createRegistry(): {
       ]);
     });
     return table(['Name', 'Key', 'Usage', 'Last used', 'State'], rows);
+  };
+
+  /* ── ChatGPT / Codex OAuth connections ───────────────────────────────── */
+  // Self-fetching: this tab pulls its own state and drives the connect /
+  // disconnect actions. Every value shown is masked + status only — the server
+  // never serialises a token, so there is nothing here to leak.
+  let codexAccounts: CodexAccount[] = [];
+  let codexEnabled = true;
+  let codexLoaded = false;
+  let codexNote = '';
+
+  const refreshCodex = async (): Promise<void> => {
+    try {
+      const res = await api.codexAccounts();
+      codexAccounts = res.accounts;
+      codexEnabled = true;
+    } catch (e) {
+      // A 404 means OAuth is not enabled on this server; anything else is a
+      // real error worth showing.
+      if (e instanceof ApiError && e.status === 404) codexEnabled = false;
+      else codexNote = e instanceof Error ? e.message : 'Failed to load accounts.';
+      codexAccounts = [];
+    } finally {
+      codexLoaded = true;
+      if (tab === 'connections' && overlay.classList.contains('open')) render();
+    }
+  };
+
+  const connectCodex = async (btn: HTMLButtonElement): Promise<void> => {
+    btn.disabled = true;
+    btn.textContent = 'Opening…';
+    try {
+      const { authorizeUrl } = await api.codexConnect();
+      // The operator approves in the real OpenAI login tab; the router's
+      // loopback callback finishes the flow and creates the credential.
+      window.open(authorizeUrl, '_blank', 'noopener');
+      codexNote = 'Approve access in the opened tab, then Refresh.';
+    } catch (e) {
+      codexNote = e instanceof Error ? e.message : 'Could not start the connection.';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Connect account';
+      render();
+    }
+  };
+
+  const disconnectCodex = async (id: string): Promise<void> => {
+    try {
+      await api.codexDisconnect(id);
+    } catch (e) {
+      codexNote = e instanceof Error ? e.message : 'Disconnect failed.';
+    }
+    await refreshCodex();
+  };
+
+  const renderConnections = (): HTMLElement => {
+    const wrap = h('div', { class: 'conn' });
+
+    const connectBtn = h('button', {
+      class: 'btn btn--gold',
+      text: 'Connect account',
+      type: 'button',
+    });
+    connectBtn.addEventListener('click', () => void connectCodex(connectBtn));
+
+    const refreshBtn = h('button', {
+      class: 'btn btn--ghost',
+      text: 'Refresh',
+      type: 'button',
+      onClick: () => void refreshCodex(),
+    });
+
+    wrap.append(
+      h('div', { class: 'conn__head' }, [
+        h('div', {}, [
+          h('div', { class: 'panel__title', text: 'ChatGPT / Codex accounts' }),
+          h('div', {
+            class: 'eyebrow',
+            text: 'OAuth (PKCE). Tokens are stored encrypted and never shown here.',
+          }),
+        ]),
+        h('div', { class: 'conn__actions' }, codexEnabled ? [connectBtn, refreshBtn] : []),
+      ]),
+    );
+
+    if (codexNote) wrap.append(h('div', { class: 'conn__note', text: codexNote }));
+
+    if (!codexEnabled) {
+      wrap.append(
+        h('div', {
+          class: 'feed__empty',
+          text: 'Codex OAuth is not enabled on this server. Set CODEX_OAUTH_ENABLED=true and restart.',
+        }),
+      );
+      return wrap;
+    }
+
+    if (!codexLoaded) {
+      wrap.append(h('div', { class: 'feed__empty', text: 'Loading accounts…' }));
+      void refreshCodex();
+      return wrap;
+    }
+
+    if (codexAccounts.length === 0) {
+      wrap.append(
+        h('div', { class: 'feed__empty', text: 'No accounts connected. Connect one to route Codex traffic.' }),
+      );
+      return wrap;
+    }
+
+    const rows = codexAccounts.map((a) => {
+      const status = !a.enabled
+        ? 'disabled'
+        : a.health
+          ? a.health.status
+          : a.expired
+            ? 'expired'
+            : 'connected';
+      const disc = h('button', {
+        class: 'btn btn--danger',
+        text: 'Disconnect',
+        type: 'button',
+        onClick: () => void disconnectCodex(a.credentialId),
+      });
+      return h('tr', {}, [
+        h('td', {}, [
+          h('b', { text: a.email ?? a.accountId ?? a.label }),
+          document.createTextNode(` ${a.accountId ?? ''}`),
+        ]),
+        h('td', { text: a.maskedKey }),
+        h('td', { text: a.expiresAt ? fmtAgo(a.expiresAt) : '—' }),
+        h('td', { class: a.enabled && !a.expired ? 'badge-on' : 'badge-off', text: status }),
+        h('td', {}, [disc]),
+      ]);
+    });
+
+    wrap.append(table(['Account', 'Ref', 'Token expiry', 'Status', ''], rows));
+    return wrap;
   };
 
   const open = (): void => overlay.classList.add('open');
