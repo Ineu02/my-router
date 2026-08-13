@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
-#  LLM Router — one-command production installer (Ubuntu/Debian)
+#  LLM Router — one-command production installer (portable Linux)
 #
-#  Installs Node.js, builds the router API + web dashboard, generates
-#  strong secrets, and runs everything as a persistent systemd service
-#  that survives crashes and reboots.
+#  Auto-detects the OS and package manager (apt-get / dnf / yum), installs
+#  Node.js LTS + a build toolchain, builds the router API + web dashboard,
+#  generates strong secrets, and runs everything as a persistent systemd
+#  service that survives crashes and reboots.
+#
+#  Supported: Ubuntu, Debian, other apt-based distros; RHEL/Fedora/CentOS,
+#  Rocky, Alma, Amazon Linux, TencentOS Server 4, other dnf/yum distros.
 #
 #  Usage (as root, or a user with sudo):
 #      curl -fsSL https://raw.githubusercontent.com/Ineu02/my-router/main/install.sh | sudo bash
@@ -40,35 +44,86 @@ if [[ "${EUID}" -ne 0 ]]; then
   die "Run as root:  sudo ./install.sh   (or pipe the curl command through 'sudo bash')."
 fi
 
-# ── 1. detect distro ──────────────────────────────────────────────────
+# ── 1. detect distro + package manager ────────────────────────────────
 if [[ ! -r /etc/os-release ]]; then
-  die "Cannot read /etc/os-release — this installer targets Ubuntu/Debian."
+  die "Cannot read /etc/os-release — cannot identify this OS. Supported: Debian/Ubuntu (apt), RHEL/Fedora/TencentOS (dnf/yum)."
 fi
 # shellcheck disable=SC1091
 . /etc/os-release
-case "${ID:-}${ID_LIKE:-}" in
-  *debian*|*ubuntu*) ok "Detected ${PRETTY_NAME:-Debian/Ubuntu}." ;;
-  *) die "Unsupported distro '${PRETTY_NAME:-unknown}'. This installer supports Ubuntu/Debian only." ;;
+
+# Package-manager abstraction. Prefer apt-get, then dnf, then yum. The distro
+# family follows from whichever is present, so new apt-/dnf-based distros work
+# without being named here (requirement: don't hard-code Ubuntu/Debian only).
+PKG=""
+if   command -v apt-get >/dev/null 2>&1; then PKG="apt"
+elif command -v dnf     >/dev/null 2>&1; then PKG="dnf"
+elif command -v yum     >/dev/null 2>&1; then PKG="yum"
+fi
+case "${PKG}" in
+  apt)     FAMILY="debian" ;;
+  dnf|yum) FAMILY="rhel" ;;
+  *) die "No supported package manager found (need apt-get, dnf, or yum). Detected OS: ${PRETTY_NAME:-unknown}. Supported: Debian/Ubuntu, RHEL/Fedora/CentOS/Rocky/Alma/Amazon Linux/TencentOS Server." ;;
 esac
+
+# Friendly note, with explicit TencentOS Server recognition.
+case "${ID:-}" in
+  tencentos) ok "Detected ${PRETTY_NAME:-TencentOS Server} (RHEL-compatible, ${PKG})." ;;
+  *)         ok "Detected ${PRETTY_NAME:-${ID:-unknown}} — using '${PKG}' (${FAMILY} family)." ;;
+esac
+
+command -v systemctl >/dev/null 2>&1 || die "systemd (systemctl) not found — this installer runs the router as a systemd service."
+
+pkg_update() {
+  case "${PKG}" in
+    apt) apt-get update -qq ;;
+    dnf) dnf -y makecache >/dev/null 2>&1 || true ;;
+    yum) yum -y makecache >/dev/null 2>&1 || true ;;
+  esac
+}
+pkg_install() {  # pkg_install <pkg> [pkg…]
+  case "${PKG}" in
+    apt) apt-get install -y -qq "$@" >/dev/null ;;
+    dnf) dnf install -y -q "$@" >/dev/null ;;
+    yum) yum install -y -q "$@" >/dev/null ;;
+  esac
+}
+ensure_cmd() {  # ensure_cmd <command> <pkg> — install only if missing (avoids
+  command -v "$1" >/dev/null 2>&1 || pkg_install "$2"   # curl vs curl-minimal conflict on RHEL 9 / TencentOS 4
+}
 
 export DEBIAN_FRONTEND=noninteractive
 
-# ── 2. base packages (git, build toolchain for native better-sqlite3) ─
-log "Installing base packages…"
-apt-get update -qq
-apt-get install -y -qq ca-certificates curl gnupg git build-essential python3 openssl >/dev/null
+# ── 2. base packages (toolchain for native better-sqlite3 build) ──────
+log "Installing base packages via ${PKG}…"
+pkg_update
+if [[ "${FAMILY}" == "debian" ]]; then
+  pkg_install ca-certificates gnupg build-essential python3
+else
+  # RHEL/Fedora/TencentOS: gcc-c++ + make + python3 satisfy node-gyp.
+  pkg_install ca-certificates gcc-c++ make python3
+fi
+# curl/git/openssl are usually pre-installed; install only if missing.
+ensure_cmd curl curl
+ensure_cmd git git
+ensure_cmd openssl openssl
 ok "Base packages present."
 
-# ── 3. Node.js ${NODE_MAJOR}.x + npm (+ pnpm via corepack) ────────────
+# ── 3. Node.js LTS from NodeSource (deb or rpm per ecosystem) ─────────
+# Prefer NodeSource LTS over the distro's (often outdated) nodejs package.
 need_node=1
 if command -v node >/dev/null 2>&1; then
   cur="$(node -v | sed 's/^v//; s/\..*//')"
   if [[ "${cur}" -ge "${NODE_MAJOR}" ]]; then need_node=0; ok "Node $(node -v) already installed."; fi
 fi
 if [[ "${need_node}" -eq 1 ]]; then
-  log "Installing Node.js ${NODE_MAJOR}.x from NodeSource…"
-  curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - >/dev/null 2>&1
-  apt-get install -y -qq nodejs >/dev/null
+  log "Installing Node.js ${NODE_MAJOR}.x LTS from NodeSource…"
+  if [[ "${FAMILY}" == "debian" ]]; then
+    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - >/dev/null 2>&1
+  else
+    curl -fsSL "https://rpm.nodesource.com/setup_${NODE_MAJOR}.x" | bash - >/dev/null 2>&1
+  fi
+  pkg_install nodejs
+  command -v node >/dev/null 2>&1 || die "Node.js install failed via NodeSource for the ${FAMILY} family. Install Node ${NODE_MAJOR}+ manually and re-run."
   ok "Installed Node $(node -v)."
 fi
 # pnpm is requested but the repo ships a package-lock.json, so `npm ci` is
@@ -79,7 +134,9 @@ corepack prepare pnpm@latest --activate >/dev/null 2>&1 || warn "pnpm activation
 # ── 4. service user ───────────────────────────────────────────────────
 if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
   log "Creating system user '${SERVICE_USER}'…"
-  useradd --system --create-home --home-dir "/home/${SERVICE_USER}" --shell /usr/sbin/nologin "${SERVICE_USER}"
+  # nologin lives at /usr/sbin/nologin (Debian) or /sbin/nologin (RHEL).
+  NOLOGIN="$(command -v nologin 2>/dev/null || echo /usr/sbin/nologin)"
+  useradd --system --create-home --home-dir "/home/${SERVICE_USER}" --shell "${NOLOGIN}" "${SERVICE_USER}"
 fi
 ok "Service user '${SERVICE_USER}' ready."
 
@@ -244,10 +301,14 @@ WRAP
 chmod +x "${WRAPPER}"
 ok "Installed 'llm-router' command."
 
-# ── 11. firewall (best-effort) ────────────────────────────────────────
+# ── 11. firewall (best-effort, ufw or firewalld) ──────────────────────
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
   ufw allow "${ROUTER_PORT}/tcp" >/dev/null 2>&1 || true
   ok "Opened ${ROUTER_PORT}/tcp in ufw."
+elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+  firewall-cmd --permanent --add-port="${ROUTER_PORT}/tcp" >/dev/null 2>&1 || true
+  firewall-cmd --reload >/dev/null 2>&1 || true
+  ok "Opened ${ROUTER_PORT}/tcp in firewalld."
 fi
 
 # ── 12. start + health check ──────────────────────────────────────────

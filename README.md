@@ -18,9 +18,15 @@ dashboard shows topology, health, and logs, and lets you connect accounts.
 
 ## VPS One-Command Installation
 
-Fresh **Ubuntu/Debian** server. Installs Node.js, builds the API + dashboard,
-generates strong secrets, and runs everything as a persistent `systemd` service
-that restarts on failure and on reboot.
+Works on most mainstream Linux VPS images — the installer auto-detects the OS
+and package manager, so the **same command** deploys everywhere.
+
+**Supported:** Ubuntu, Debian, and other `apt` distros; RHEL, Fedora, CentOS,
+Rocky, AlmaLinux, Amazon Linux, **TencentOS Server 4**, and other `dnf`/`yum`
+distros. It installs Node.js **LTS from NodeSource** (not the distro's outdated
+package), builds the API + dashboard, generates strong secrets, and runs
+everything as a persistent `systemd` service that restarts on failure and on
+reboot. Re-running it updates an existing install in place (idempotent).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Ineu02/my-router/main/install.sh | sudo bash
@@ -45,9 +51,11 @@ Tunables (export before running): `REPO_URL`, `REPO_REF`, `INSTALL_DIR`
 <!-- APPEND_README -->
 ### What the installer does
 
-1. Detects Ubuntu/Debian; installs `git`, `build-essential`, `python3`,
-   `openssl`, and **Node.js 20.x** (NodeSource) if missing (enables `pnpm` via
-   corepack for parity; the build itself uses `npm ci`).
+1. Reads `/etc/os-release` and picks the package manager automatically
+   (`apt-get` → `dnf` → `yum`); installs `git`, a C/C++ build toolchain
+   (`build-essential` on apt, `gcc-c++ make` on RHEL), `python3`, `openssl`,
+   and **Node.js 20.x LTS** from NodeSource (deb or rpm as appropriate). Exits
+   with a clear message on an unsupported OS/package manager.
 2. Creates a locked-down system user (`llmrouter`, no login shell).
 3. Clones/updates the repo into `/opt/llm-router`.
 4. `npm ci` → builds the **API** (`npm run build`) and the **dashboard**
@@ -71,7 +79,8 @@ Tunables (export before running): `REPO_URL`, `REPO_REF`, `INSTALL_DIR`
 | 1455 | Codex OAuth loopback callback | localhost-only (see OAuth note) |
 
 Only **20128** needs to be reachable from the internet. The installer opens it
-in `ufw` automatically when `ufw` is active.
+automatically when a firewall is active (`ufw` on Debian/Ubuntu, `firewalld` on
+RHEL/TencentOS); otherwise open it in your provider's security group.
 
 ### Accessing the dashboard
 
