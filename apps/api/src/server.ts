@@ -1,7 +1,10 @@
 import Fastify, { LogController, type FastifyError, type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
+import fastifyStatic from '@fastify/static';
 import { createServer, type Server } from 'node:http';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   RouterError,
   RouterErrorCode,
@@ -156,6 +159,20 @@ export async function buildServer(opts: BuildOptions = {}): Promise<BuiltServer>
 
   await app.register(cookie, { secret: config.sessionSecret || 'router-dev-secret' });
 
+  /* ── static dashboard (production single-origin) ───────────────────── */
+  // When SERVE_WEB is on and a build exists, the router serves the compiled
+  // dashboard from its own origin. Registered before the API routes so its
+  // catch-all never shadows /v1 or /api; those keep their own handlers, and
+  // the auth preHandler still ignores everything that is not /v1/.
+  const serveWeb = config.serveWeb && existsSync(join(config.webDistDir, 'index.html'));
+  if (config.serveWeb && !serveWeb) {
+    app.log.warn(`SERVE_WEB=true but no dashboard build at ${config.webDistDir}; serving API only.`);
+  }
+  if (serveWeb) {
+    await app.register(fastifyStatic, { root: config.webDistDir, index: ['index.html'] });
+    app.log.info(`Serving dashboard from ${config.webDistDir}`);
+  }
+
   const rateLimiter = new MemoryRateLimitStore(now);
 
   /* ── request id ────────────────────────────────────────────────────── */
@@ -227,16 +244,24 @@ export async function buildServer(opts: BuildOptions = {}): Promise<BuiltServer>
     });
   });
 
-  app.setNotFoundHandler((req, reply) =>
-    reply.code(404).send({
+  app.setNotFoundHandler((req, reply) => {
+    // With the dashboard served here, any non-API GET that accepts HTML is a
+    // client-side route: hand back index.html so deep links and refreshes work.
+    // API namespaces always fall through to the JSON 404 below.
+    const path = req.url.split('?')[0] ?? '';
+    const isApi = path.startsWith('/v1') || path.startsWith('/api') || path === '/health';
+    if (serveWeb && req.method === 'GET' && !isApi && (req.headers.accept ?? '').includes('text/html')) {
+      return reply.sendFile('index.html');
+    }
+    return reply.code(404).send({
       error: {
         message: `Unknown route ${req.method} ${req.url}`,
         type: 'invalid_request_error',
         code: 'not_found',
         param: null,
       },
-    }),
-  );
+    });
+  });
 
   /* ── routes ────────────────────────────────────────────────────────── */
   const deps = { engine, repos, config, startedAt };
@@ -325,6 +350,7 @@ export async function start(): Promise<BuiltServer> {
     line,
     `  Endpoint      http://${config.host}:${config.port}/v1`,
     `  Health        http://${config.host}:${config.port}/api/health`,
+    config.serveWeb ? `  Dashboard     http://${config.host}:${config.port}/` : null,
     `  Auth          ${config.requireApiKey ? 'required (Bearer sk-router-…)' : 'DISABLED'}`,
     `  Providers     ${built.repos.providers.list().filter((p) => p.enabled).length} enabled`,
     `  Models        ${built.repos.models.listEnabled().length} enabled`,

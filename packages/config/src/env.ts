@@ -72,6 +72,15 @@ const EnvSchema = z.object({
   ENABLE_MOCK_PROVIDER: bool(false),
   MOCK_PROVIDER_PORT: int(20129, 1),
 
+  /* ── Static dashboard hosting (production single-origin) ───────────── */
+  // When true, the router also serves the built web dashboard from its own
+  // origin, so one port exposes both the API (/v1, /api) and the UI (/).
+  // Off by default: dev uses the Vite server, and the test suite never builds
+  // the web bundle, so leaving this off keeps both untouched.
+  SERVE_WEB: bool(false),
+  // Overrides where the built dashboard is read from. Empty → apps/web/dist.
+  WEB_DIST_DIR: z.string().optional().default(''),
+
   CUSTOM_PROVIDER_BASE_URL: z.string().optional().default(''),
   CUSTOM_PROVIDER_API_KEY: z.string().optional().default(''),
   CUSTOM_PROVIDER_MODELS: z.string().optional().default(''),
@@ -132,6 +141,11 @@ export interface RouterConfig {
 
   enableMockProvider: boolean;
   mockProviderPort: number;
+
+  /** Serve the built web dashboard from the router's own origin. */
+  serveWeb: boolean;
+  /** Absolute path to the built dashboard (apps/web/dist by default). */
+  webDistDir: string;
 
   customProvider: { baseUrl: string; apiKey: string; models: string[] } | null;
 
@@ -275,6 +289,21 @@ export function loadConfig(opts: { reload?: boolean; envPath?: string } = {}): {
     ? resolve(root, e.DATABASE_URL.slice(5))
     : resolve(root, 'data/router.db');
 
+  const webDistDir = e.WEB_DIST_DIR ? resolve(root, e.WEB_DIST_DIR) : resolve(root, 'apps/web/dist');
+  if (e.SERVE_WEB && !existsSync(resolve(webDistDir, 'index.html'))) {
+    warnings.push({
+      level: 'warn',
+      message: `SERVE_WEB=true but no dashboard build was found at ${webDistDir} — run \`npm run build --workspace=@router/web\`. The API still serves normally.`,
+    });
+  }
+  if (isProd && e.SERVE_WEB && e.ROUTER_HOST !== '127.0.0.1' && e.ROUTER_HOST !== 'localhost') {
+    warnings.push({
+      level: 'warn',
+      message:
+        'Dashboard is served on a public interface without TLS awareness here — front it with a TLS-terminating reverse proxy (or restrict the port by firewall) so the admin login is not sent in the clear.',
+    });
+  }
+
   const customModels = e.CUSTOM_PROVIDER_MODELS.split(',')
     .map((s) => s.trim())
     .filter(Boolean);
@@ -323,6 +352,9 @@ export function loadConfig(opts: { reload?: boolean; envPath?: string } = {}): {
 
     enableMockProvider: e.ENABLE_MOCK_PROVIDER,
     mockProviderPort: e.MOCK_PROVIDER_PORT,
+
+    serveWeb: e.SERVE_WEB,
+    webDistDir,
 
     customProvider:
       e.CUSTOM_PROVIDER_BASE_URL && e.CUSTOM_PROVIDER_API_KEY
