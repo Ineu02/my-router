@@ -148,9 +148,9 @@ else
     "${ENV_FILE}"
   # Serving flag isn't in .env.example's core block; append if absent.
   grep -q '^SERVE_WEB=' "${ENV_FILE}" || printf '\n# Serve the built dashboard from this origin (production single-port).\nSERVE_WEB=true\n' >> "${ENV_FILE}"
+  # Secrets live ONLY in the chmod-600 .env — never echoed and never written
+  # to a side file. Retrieve the client key later with `llm-router key`.
   ok "Wrote ${ENV_FILE} (ROUTER_API_KEY, ADMIN_TOKEN, SESSION_SECRET, CREDENTIAL_ENC_KEY generated)."
-  echo "${ROUTER_KEY}" > "${INSTALL_DIR}/.router-api-key.txt"
-  chmod 600 "${INSTALL_DIR}/.router-api-key.txt"
 fi
 chmod 600 "${ENV_FILE}"
 
